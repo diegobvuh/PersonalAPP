@@ -560,6 +560,8 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(61, 144, 248
 @media (max-width: 720px) {
   .monitor-unit { height: calc(100% - 246px); }
   .cockpit-panel { height: 246px; }
+  .monitor-bezel { display: flex; flex-direction: column; }
+  .monitor-bezel .content-stage { height: auto; flex: 1; min-height: 0; }
   .device-chassis { position: relative; display: flex; flex-direction: column; justify-content: flex-start; align-items: center; }
   .systems-console { display: block !important; width: min(100%, 270px); height: 42px; min-height: 0; position: absolute; z-index: 4; top: 0; left: 50%; transform: translateX(-50%); margin: 0; padding: 4px 7px; border-radius: 10px; background: linear-gradient(#cbd4d7,#8e9ca1); box-shadow: inset 0 1px #fff,0 3px 8px rgba(31,48,57,.28); }
   .systems-title,.systems-readout { display: none; }
