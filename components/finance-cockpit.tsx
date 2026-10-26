@@ -63,10 +63,10 @@ type View = "home" | "paycheck" | "activity" | "portfolio" | "documents";
 
 const modules: { id: View; label: string; kicker: string; icon: typeof Gauge; tone: string }[] = [
   { id: "home", label: "Overview", kicker: "Your money today", icon: Gauge, tone: "blue" },
-  { id: "paycheck", label: "Paycheck", kicker: "Plan $2,740", icon: CircleDollarSign, tone: "green" },
-  { id: "activity", label: "Activity", kicker: "5 new transactions", icon: Activity, tone: "orange" },
-  { id: "portfolio", label: "Portfolio", kicker: "$31,870 invested", icon: TrendingUp, tone: "purple" },
-  { id: "documents", label: "Job files", kicker: "12 documents", icon: BriefcaseBusiness, tone: "cyan" },
+  { id: "paycheck", label: "Paycheck", kicker: "Plan your income", icon: CircleDollarSign, tone: "green" },
+  { id: "activity", label: "Activity", kicker: "No transactions yet", icon: Activity, tone: "orange" },
+  { id: "portfolio", label: "Portfolio", kicker: "Connect an account", icon: TrendingUp, tone: "purple" },
+  { id: "documents", label: "Job files", kicker: "No documents yet", icon: BriefcaseBusiness, tone: "cyan" },
 ];
 
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
@@ -76,33 +76,40 @@ function useSyncedState<T>(key: string, initialValue: T) {
   const initialValueRef = useRef(initialValue);
   const ready = useRef(false);
   const cloudUserId = useRef<string | null>(null);
+  const storageKey = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    let localValue = initialValueRef.current;
-    const stored = window.localStorage.getItem(key);
-    if (stored) {
-      try {
-        localValue = JSON.parse(stored);
-        setValue(localValue);
-      } catch { /* keep safe default */ }
-    }
+    ready.current = false;
+
+    const scopedKey = (userId: string | null) => userId ? `finance:user:${userId}:${key}` : `finance:guest:${key}`;
 
     const hydrateCloud = async (userId: string) => {
       if (!supabase) return;
       cloudUserId.current = userId;
+      const userStorageKey = scopedKey(userId);
+      storageKey.current = userStorageKey;
+      let localValue = initialValueRef.current;
+      const stored = window.localStorage.getItem(userStorageKey);
+      if (stored) {
+        try { localValue = JSON.parse(stored) as T; } catch { /* keep blank default */ }
+      }
       const { data } = await supabase.from("user_app_state").select("value").eq("user_id", userId).eq("data_key", key).maybeSingle();
       if (!active) return;
       if (data?.value !== undefined) {
         setValue(data.value as T);
-        window.localStorage.setItem(key, JSON.stringify(data.value));
+        window.localStorage.setItem(userStorageKey, JSON.stringify(data.value));
       } else {
+        setValue(localValue);
+        window.localStorage.setItem(userStorageKey, JSON.stringify(localValue));
         await supabase.from("user_app_state").upsert({ user_id: userId, data_key: key, value: localValue, updated_at: new Date().toISOString() });
       }
       ready.current = true;
     };
 
     if (!supabase) {
+      storageKey.current = scopedKey(null);
+      setValue(initialValueRef.current);
       ready.current = true;
       return;
     }
@@ -110,18 +117,29 @@ function useSyncedState<T>(key: string, initialValue: T) {
     supabase.auth.getSession().then(({ data }) => {
       if (!active) return;
       if (data.session?.user.id) hydrateCloud(data.session.user.id);
-      else ready.current = true;
+      else {
+        cloudUserId.current = null;
+        storageKey.current = scopedKey(null);
+        setValue(initialValueRef.current);
+        ready.current = true;
+      }
     });
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session?.user.id) hydrateCloud(session.user.id);
-      else cloudUserId.current = null;
+      else {
+        cloudUserId.current = null;
+        storageKey.current = scopedKey(null);
+        setValue(initialValueRef.current);
+        ready.current = true;
+      }
     });
     return () => { active = false; authListener.subscription.unsubscribe(); };
   }, [key]);
 
   useEffect(() => {
-    window.localStorage.setItem(key, JSON.stringify(value));
-    if (!ready.current || !cloudUserId.current || !supabase) return;
+    if (!ready.current || !storageKey.current) return;
+    window.localStorage.setItem(storageKey.current, JSON.stringify(value));
+    if (!cloudUserId.current || !supabase) return;
     const client = supabase;
     const userId = cloudUserId.current;
     const timer = window.setTimeout(() => {
@@ -138,11 +156,14 @@ function useSyncedState<T>(key: string, initialValue: T) {
 export function FinanceCockpit() {
   const [view, setView] = useState<View>("home");
   const [wheelIndex, setWheelIndex] = useState(0);
-  const [smartMode, setSmartMode] = useSyncedState("finance-smart-mode", true);
-  const [soundOn, setSoundOn] = useSyncedState("finance-sound-mode", false);
+  const [smartMode, setSmartMode] = useSyncedState("finance-v2-smart-mode", true);
+  const [soundOn, setSoundOn] = useSyncedState("finance-v2-sound-mode", false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [accountEmail, setAccountEmail] = useState<string | null>(null);
+  const [accountUserId, setAccountUserId] = useState<string | null>(null);
+  const [authChecked, setAuthChecked] = useState(!supabaseConfigured);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
   const wheelStart = useRef<number | null>(null);
   const wheelElement = useRef<HTMLDivElement | null>(null);
@@ -150,8 +171,8 @@ export function FinanceCockpit() {
   const wheelTravel = useRef(0);
   const [wheelRotation, setWheelRotation] = useState(0);
   const [wheelDragging, setWheelDragging] = useState(false);
-  const [reserveMode, setReserveMode] = useSyncedState("finance-reserve-mode", 1);
-  const [displayLevel, setDisplayLevel] = useSyncedState("finance-display-level", 1);
+  const [reserveMode, setReserveMode] = useSyncedState("finance-v2-reserve-mode", 1);
+  const [displayLevel, setDisplayLevel] = useSyncedState("finance-v2-display-level", 1);
   const [syncing, setSyncing] = useState(false);
   const reserveLevels = [300, 420, 650];
   const displayLevels = [0.82, 1, 1.12];
@@ -165,8 +186,16 @@ export function FinanceCockpit() {
 
   useEffect(() => {
     if (!supabase) return;
-    supabase.auth.getSession().then(({ data }) => setAccountEmail(data.session?.user.email ?? null));
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => setAccountEmail(session?.user.email ?? null));
+    supabase.auth.getSession().then(({ data }) => {
+      setAccountEmail(data.session?.user.email ?? null);
+      setAccountUserId(data.session?.user.id ?? null);
+      setAuthChecked(true);
+    });
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAccountEmail(session?.user.email ?? null);
+      setAccountUserId(session?.user.id ?? null);
+      setAuthChecked(true);
+    });
     return () => data.subscription.unsubscribe();
   }, []);
 
@@ -262,15 +291,22 @@ export function FinanceCockpit() {
 
   const signInWithGoogle = async () => {
     if (!supabase) return;
+    setAuthError(null);
     const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: window.location.origin } });
-    if (error) setToast(error.message);
+    if (error) setAuthError(error.message);
   };
 
   const signOut = async () => {
     await supabase?.auth.signOut();
+    setAccountUserId(null);
+    setAccountEmail(null);
     setAccountOpen(false);
-    setToast("Signed out · local data remains on this device");
+    setToast("Signed out");
   };
+
+  if (!supabaseConfigured) return <AuthGate mode="setup" onSignIn={signInWithGoogle} error={authError} />;
+  if (!authChecked) return <AuthGate mode="loading" onSignIn={signInWithGoogle} error={authError} />;
+  if (!accountUserId) return <AuthGate mode="signin" onSignIn={signInWithGoogle} error={authError} />;
 
   return (
     <main className="app-shell">
@@ -376,7 +412,7 @@ export function FinanceCockpit() {
                 </div>
               </div>
               <div key={view} className="view-enter">
-                {view === "home" && <Overview onNavigate={selectModule} smartMode={smartMode} reserveTarget={reserveTarget} setToast={setToast} />}
+                {view === "home" && <Overview onNavigate={selectModule} smartMode={smartMode} setToast={setToast} />}
                 {view === "paycheck" && <PaycheckView setToast={setToast} />}
                 {view === "activity" && <ActivityView />}
                 {view === "portfolio" && <PortfolioView />}
@@ -394,15 +430,20 @@ export function FinanceCockpit() {
   );
 }
 
-function Overview({ onNavigate, smartMode, reserveTarget, setToast }: { onNavigate: (view: View) => void; smartMode: boolean; reserveTarget: number; setToast: (text: string) => void }) {
-  const safeMove = Math.max(0, 600 - reserveTarget);
+function AuthGate({ mode, onSignIn, error }: { mode: "setup" | "loading" | "signin"; onSignIn: () => void; error: string | null }) {
+  const isLoading = mode === "loading";
+  const isSetup = mode === "setup";
+  return <main className="auth-gate"><div className="auth-card"><span className="auth-mark"><Cloud size={24} /></span><span className="eyebrow">PRIVATE FINANCE DECK</span><h1>{isLoading ? "Checking your account" : isSetup ? "Supabase setup needed" : "Sign in to continue"}</h1><p>{isLoading ? "Preparing your private workspace…" : isSetup ? "Add the Supabase public values to .env.local before opening the app." : "Your accounts, documents, and financial data are private to your account."}</p>{!isLoading && !isSetup && <button className="account-action auth-signin" onClick={onSignIn}>Continue with Google</button>}{error && <small className="auth-error">{error}</small>}</div></main>;
+}
+
+function Overview({ onNavigate, smartMode, setToast }: { onNavigate: (view: View) => void; smartMode: boolean; setToast: (text: string) => void }) {
   return (
     <div className="overview-page">
       <div className="hero-row">
         <div>
-          <span className="eyebrow">MONDAY · OCTOBER 26</span>
-          <h1>Good morning, Diego.</h1>
-          <p>Your money is steady. One smart move can make next week easier.</p>
+          <span className="eyebrow">PRIVATE FINANCE WORKSPACE</span>
+          <h1>Welcome to your cockpit.</h1>
+          <p>Connect an account or add your first piece of information to get started.</p>
         </div>
       </div>
 
@@ -418,17 +459,17 @@ function Overview({ onNavigate, smartMode, reserveTarget, setToast }: { onNaviga
       </section>
 
       <section className="metric-row">
-        <MetricCard label="Available to spend" value="$1,284" delta="for the next 12 days" icon={<WalletCards size={18} />} />
-        <MetricCard label="Net worth" value="$48,620" delta="+$2,180 this month" positive icon={<TrendingUp size={18} />} />
-        <MetricCard label="Monthly cash flow" value="+$1,740" delta="32% of income kept" positive icon={<PiggyBank size={18} />} />
+        <MetricCard label="Available to spend" value="$0" delta="Connect an account to begin" icon={<WalletCards size={18} />} />
+        <MetricCard label="Net worth" value="$0" delta="No accounts connected" icon={<TrendingUp size={18} />} />
+        <MetricCard label="Monthly cash flow" value="$0" delta="Waiting for your first account" icon={<PiggyBank size={18} />} />
       </section>
 
       <section className="dashboard-grid">
         <article className="panel cashflow-panel">
           <PanelHeader title="Cash flow" subtitle="Six month trend" action="Details" />
-          <div className="chart-summary"><span><i className="income-dot" />Income <b>$5,480</b></span><span><i className="spend-dot" />Spending <b>$3,740</b></span></div>
+          <div className="chart-summary"><span><i className="income-dot" />Income <b>$0</b></span><span><i className="spend-dot" />Spending <b>$0</b></span></div>
           <div className="cashflow-chart">
-            <ResponsiveContainer width="100%" height="100%">
+            {cashflowData.length ? <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={cashflowData} margin={{ top: 8, right: 8, left: -24, bottom: 0 }}>
                 <defs><linearGradient id="income" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#4d95ff" stopOpacity={0.28} /><stop offset="100%" stopColor="#4d95ff" stopOpacity={0} /></linearGradient></defs>
                 <CartesianGrid stroke="#dce7ef" strokeDasharray="3 5" vertical={false} />
@@ -438,14 +479,14 @@ function Overview({ onNavigate, smartMode, reserveTarget, setToast }: { onNaviga
                 <Area type="monotone" dataKey="income" stroke="#4d95ff" strokeWidth={3} fill="url(#income)" />
                 <Line type="monotone" dataKey="spending" stroke="#69c487" strokeWidth={2.5} dot={false} />
               </AreaChart>
-            </ResponsiveContainer>
+            </ResponsiveContainer> : <div className="empty-state">Connect an account to see your cash flow.</div>}
           </div>
         </article>
 
         <article className="panel spending-panel">
           <PanelHeader title="Where it went" subtitle="October spending" action="Budget" />
           <div className="donut-wrap">
-            <div className="donut-chart"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={spendingData} dataKey="value" innerRadius={53} outerRadius={71} paddingAngle={4} stroke="none">{spendingData.map((item) => <Cell key={item.name} fill={item.color} />)}</Pie></PieChart></ResponsiveContainer><div className="donut-center"><b>$3.2k</b><small>spent</small></div></div>
+            <div className="donut-chart">{spendingData.length ? <ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={spendingData} dataKey="value" innerRadius={53} outerRadius={71} paddingAngle={4} stroke="none">{spendingData.map((item) => <Cell key={item.name} fill={item.color} />)}</Pie></PieChart></ResponsiveContainer> : <div className="empty-state">No spending yet.</div>}<div className="donut-center"><b>$0</b><small>spent</small></div></div>
             <div className="legend">{spendingData.slice(0, 4).map((item) => <span key={item.name}><i style={{ background: item.color }} />{item.name}<b>{Math.round(item.value / 32.5)}%</b></span>)}</div>
           </div>
         </article>
@@ -454,8 +495,8 @@ function Overview({ onNavigate, smartMode, reserveTarget, setToast }: { onNaviga
           <PanelHeader title="Smart briefing" subtitle={smartMode ? "Watching your cash flow" : "Smart mode is paused"} />
           {smartMode ? <>
             <div className="insight-icon"><Lightbulb size={21} /></div>
-            <h3>You can safely move {money.format(safeMove)}</h3>
-            <p>Your bills are covered through Nov 12. Moving {money.format(safeMove)} to your emergency fund keeps your selected {money.format(reserveTarget)} reserve.</p>
+            <h3>Connect an account to unlock smart planning</h3>
+            <p>Your private recommendations will appear here after your first account is connected.</p>
             <div className="confidence"><span><ShieldCheck size={14} /> High confidence</span><span>Based on 4 recurring bills</span></div>
             <div className="insight-actions"><button onClick={() => setToast("Suggestion approved and logged")}>Approve plan</button><button onClick={() => setToast("Suggestion dismissed")}>Not now</button></div>
           </> : <div className="paused-state"><Pause size={26} /><p>Use the green cockpit button to resume recommendations.</p></div>}
@@ -463,7 +504,7 @@ function Overview({ onNavigate, smartMode, reserveTarget, setToast }: { onNaviga
 
         <article className="panel recent-panel">
           <PanelHeader title="Recent activity" subtitle="Across 3 connected accounts" action="See all" />
-          <div className="transactions">{transactions.slice(0, 4).map((transaction) => <TransactionRow key={transaction.id} transaction={transaction} />)}</div>
+          <div className="transactions">{transactions.length ? transactions.slice(0, 4).map((transaction) => <TransactionRow key={transaction.id} transaction={transaction} />) : <div className="empty-state">No activity yet. Connect an account to get started.</div>}</div>
         </article>
       </section>
     </div>
@@ -483,28 +524,28 @@ function TransactionRow({ transaction }: { transaction: (typeof transactions)[nu
 }
 
 function PaycheckView({ setToast }: { setToast: (text: string) => void }) {
-  const paycheck = 2740;
-  const [allocations, setAllocations] = useSyncedState<Allocation[]>("finance-allocations", initialAllocations);
+  const paycheck = 0;
+  const [allocations, setAllocations] = useSyncedState<Allocation[]>("finance-v2-allocations", initialAllocations);
   const allocated = allocations.reduce((sum, item) => sum + item.amount, 0);
   const remaining = paycheck - allocated;
 
   const updateAmount = (id: string, amount: number) => setAllocations((items) => items.map((item) => item.id === id ? { ...item, amount: Math.max(0, Math.min(paycheck, amount)) } : item));
   const applyRecommended = () => {
     setAllocations(initialAllocations);
-    setToast("Recommended plan restored");
+    setToast("Add a paycheck amount to create a plan");
   };
 
   return <div className="subpage">
     <div className="hero-row compact"><div><span className="eyebrow">NEXT MOVE</span><h1>Plan your paycheck</h1><p>Every dollar gets a clear job before you spend it.</p></div><button className="ghost-action" onClick={applyRecommended}><Sparkles size={16} /> Use smart plan</button></div>
     <div className="paycheck-layout">
       <section className="panel allocation-panel">
-        <div className="paycheck-source"><span className="source-icon"><ArrowDownLeft /></span><div><small>PAYCHECK RECEIVED · OCT 25</small><h2>$2,740.00</h2><p>Employer direct deposit · Checking ••4821</p></div><span className="verified"><Check size={13} /> Verified</span></div>
+        <div className="paycheck-source"><span className="source-icon"><ArrowDownLeft /></span><div><small>NO PAYCHECK CONNECTED</small><h2>$0.00</h2><p>Connect an account or add income to start planning.</p></div></div>
         <div className="allocation-head"><div><h3>Give it a purpose</h3><p>Drag or type to fine-tune your plan.</p></div><span className={remaining < 0 ? "over" : ""}><b>{money.format(remaining)}</b> left to assign</span></div>
         <div className="allocation-list">
-          {allocations.map((item) => <div className="allocation-item" key={item.id}>
+          {allocations.length ? allocations.map((item) => <div className="allocation-item" key={item.id}>
             <span className="allocation-icon" style={{ "--accent": item.color } as CSSProperties}>{item.icon}</span>
             <div className="allocation-control"><div><b>{item.label}</b><small>{item.amount >= item.target ? "Target covered" : `${money.format(item.target - item.amount)} below target`}</small></div><div className="slider-row"><input type="range" min="0" max={Math.min(1600, paycheck)} step="10" value={item.amount} onChange={(e) => updateAmount(item.id, Number(e.target.value))} style={{ "--fill": `${Math.min(100, item.amount / 16)}%`, "--accent": item.color } as CSSProperties} /><label>$<input inputMode="numeric" value={item.amount} onChange={(e) => updateAmount(item.id, Number(e.target.value) || 0)} /></label></div></div>
-          </div>)}
+          </div>) : <div className="empty-state">Your paycheck plan will appear here after you connect an account.</div>}
         </div>
         <div className="allocation-footer"><span><i style={{ width: `${Math.max(0, Math.min(100, allocated / paycheck * 100))}%` }} /></span><div><b>{money.format(allocated)} assigned</b><small>of {money.format(paycheck)}</small></div><button disabled={remaining !== 0} onClick={() => setToast("Paycheck plan saved")}>Confirm plan</button></div>
       </section>
@@ -525,25 +566,18 @@ function ActivityView() {
 }
 
 function PortfolioView() {
-  return <div className="subpage"><div className="hero-row compact"><div><span className="eyebrow">FIDELITY SNAPSHOT</span><h1>Your portfolio</h1><p>A calm, read-only view of the long game.</p></div><span className="status-pill synced"><span className="live-dot" /> Market open</span></div>
-    <section className="portfolio-hero"><div><small>TOTAL INVESTED</small><h2>$31,870.33</h2><span className="positive">+$286.40 today · +0.91%</span></div><div className="mini-chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={cashflowData}><defs><linearGradient id="portfolio" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#62c485" stopOpacity={.4}/><stop offset="1" stopColor="#62c485" stopOpacity={0}/></linearGradient></defs><Area dataKey="income" stroke="#4eb879" strokeWidth={3} fill="url(#portfolio)" /></AreaChart></ResponsiveContainer></div></section>
-    <div className="portfolio-grid"><article className="panel holdings-panel"><PanelHeader title="Holdings" subtitle="Fidelity Individual ••1702" action="Refresh"/><div className="holding-head"><span>Asset</span><span>Value</span><span>Today</span></div>{holdings.map((holding) => <div className="holding-row" key={holding.ticker}><span className="ticker">{holding.ticker}</span><div><b>{holding.name}</b><small>{Math.round(holding.value / 180)} shares</small></div><strong>{money.format(holding.value)}</strong><span className={holding.change >= 0 ? "positive" : "negative"}>{holding.change > 0 ? "+" : ""}{holding.change}%</span></div>)}</article>
-      <article className="panel allocation-chart"><PanelHeader title="Allocation" subtitle="Across this portfolio"/><div className="portfolio-donut"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={portfolioData} dataKey="value" innerRadius={55} outerRadius={78} paddingAngle={3} stroke="none">{portfolioData.map(item => <Cell key={item.name} fill={item.color}/>)}</Pie></PieChart></ResponsiveContainer><b>Balanced</b></div><div className="legend wide">{portfolioData.map(item => <span key={item.name}><i style={{background:item.color}}/>{item.name}<b>{item.value}%</b></span>)}</div></article></div>
+  return <div className="subpage"><div className="hero-row compact"><div><span className="eyebrow">INVESTMENT SNAPSHOT</span><h1>Your portfolio</h1><p>Connect an account to see your investments here.</p></div></div>
+    <section className="portfolio-hero"><div><small>TOTAL INVESTED</small><h2>$0.00</h2><span>No connected investment accounts</span></div></section>
+    <div className="portfolio-grid"><article className="panel holdings-panel"><PanelHeader title="Holdings" subtitle="No accounts connected"/><div className="empty-state">Your holdings will appear here once you connect an investment account.</div></article>
+      <article className="panel allocation-chart"><PanelHeader title="Allocation" subtitle="Across your portfolio"/><div className="empty-state">No allocation data yet.</div></article></div>
   </div>;
 }
 
 type UploadedDocument = { name: string; type: string; size: string; date: string; status: string };
 function DocumentsView({ setToast }: { setToast: (text: string) => void }) {
-  const [documents, setDocuments] = useSyncedState<UploadedDocument[]>("finance-documents", [
-    { name: "2025 W-2 · Acme Studio", type: "Tax", size: "284 KB", date: "Jan 22", status: "Verified" },
-    { name: "October Pay Statement", type: "Pay stub", size: "198 KB", date: "Oct 25", status: "Reviewed" },
-    { name: "Benefits Enrollment", type: "Benefits", size: "1.2 MB", date: "Oct 12", status: "Action needed" },
-    { name: "Master Resume · 2026", type: "Career", size: "412 KB", date: "Sep 30", status: "Current" },
-    { name: "Employment Offer", type: "Employment", size: "356 KB", date: "Mar 08", status: "Signed" },
-    { name: "Direct Deposit Form", type: "Payroll", size: "221 KB", date: "Mar 10", status: "Verified" },
-  ]);
+  const [documents, setDocuments] = useSyncedState<UploadedDocument[]>("finance-v2-documents", []);
   const [activeFolder, setActiveFolder] = useState("All documents");
-  const [selectedName, setSelectedName] = useState("2025 W-2 · Acme Studio");
+  const [selectedName, setSelectedName] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const folders = [
     { name: "All documents", match: () => true },
@@ -568,9 +602,9 @@ function DocumentsView({ setToast }: { setToast: (text: string) => void }) {
   };
   return <div className="subpage"><div className="hero-row compact"><div><span className="eyebrow">WORK VAULT</span><h1>Job documents</h1><p>Browse your work files like a personal media library.</p></div><button className="primary-action" onClick={() => fileRef.current?.click()}><Upload size={16}/> Upload file</button><input className="hidden-input" type="file" ref={fileRef} onChange={upload} accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"/></div>
     <section className="panel document-browser">
-      <header className="library-bar"><div><span className="library-mark"><BriefcaseBusiness size={15}/></span><span><b>Work library</b><small>Acme Studio · {documents.length} files</small></span></div><span className="library-sync"><i/> PRIVATE LIBRARY</span></header>
+      <header className="library-bar"><div><span className="library-mark"><BriefcaseBusiness size={15}/></span><span><b>Work library</b><small>Private workspace · {documents.length} files</small></span></div><span className="library-sync"><i/> PRIVATE LIBRARY</span></header>
       <div className="library-layout">
-        <aside className="folder-browser"><span className="folder-heading">LIBRARY</span>{folders.map((folder) => { const count = documents.filter(folder.match).length; const active = folder.name === activeFolder; return <button key={folder.name} className={active ? "active" : ""} onClick={() => setActiveFolder(folder.name)}>{active ? <FolderOpen size={15}/> : <Folder size={15}/>}<span>{folder.name}</span><small>{count}</small><ChevronRight size={13}/></button>; })}<div className="library-source"><span className="employer-logo small">A</span><span><b>Acme Studio</b><small>Current employer</small></span></div></aside>
+        <aside className="folder-browser"><span className="folder-heading">LIBRARY</span>{folders.map((folder) => { const count = documents.filter(folder.match).length; const active = folder.name === activeFolder; return <button key={folder.name} className={active ? "active" : ""} onClick={() => setActiveFolder(folder.name)}>{active ? <FolderOpen size={15}/> : <Folder size={15}/>}<span>{folder.name}</span><small>{count}</small><ChevronRight size={13}/></button>; })}</aside>
         <div className="file-library">
           <div className="file-path"><span>WORK</span><ChevronRight size={12}/><b>{activeFolder.toUpperCase()}</b><small>{visibleDocuments.length} ITEMS</small></div>
           <div className="file-columns"><span>#</span><span>NAME</span><span>KIND</span><span>ADDED</span><span>STATUS</span></div>
@@ -579,7 +613,7 @@ function DocumentsView({ setToast }: { setToast: (text: string) => void }) {
         </div>
       </div>
     </section>
-    <article className="document-smart"><Sparkles size={20}/><div><b>One document needs you</b><p>Your benefits enrollment appears to close on October 31. Open it to verify the deadline and review your choices.</p></div><button onClick={() => setToast("Document opened for review")}>Review now</button></article>
+    {!documents.length && <article className="document-smart"><Sparkles size={20}/><div><b>Your private document vault is ready</b><p>Upload your first document to keep it organized in this account.</p></div><button onClick={() => fileRef.current?.click()}>Upload now</button></article>}
   </div>;
 }
 
