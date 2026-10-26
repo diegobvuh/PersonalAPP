@@ -412,14 +412,13 @@ export function FinanceCockpit() {
                 </div>
               </div>
               <div key={view} className="view-enter">
-                {view === "home" && <Overview onNavigate={selectModule} smartMode={smartMode} setToast={setToast} />}
+                {view === "home" && <Overview smartMode={smartMode} setToast={setToast} />}
                 {view === "paycheck" && <PaycheckView setToast={setToast} />}
                 {view === "activity" && <ActivityView />}
                 {view === "portfolio" && <PortfolioView />}
                 {view === "documents" && <DocumentsView setToast={setToast} />}
               </div>
             </div>
-            <div className="monitor-chin"><span>PERSONAL DISPLAY</span><b>FINANCE OS</b><i aria-label="Monitor powered on" /></div>
           </div>
         </section>
       </div>
@@ -436,7 +435,7 @@ function AuthGate({ mode, onSignIn, error }: { mode: "setup" | "loading" | "sign
   return <main className="auth-gate"><div className="auth-card"><span className="auth-mark"><Cloud size={24} /></span><span className="eyebrow">PRIVATE FINANCE DECK</span><h1>{isLoading ? "Checking your account" : isSetup ? "Supabase setup needed" : "Sign in to continue"}</h1><p>{isLoading ? "Preparing your private workspace…" : isSetup ? "Add the Supabase public values to .env.local before opening the app." : "Your accounts, documents, and financial data are private to your account."}</p>{!isLoading && !isSetup && <button className="account-action auth-signin" onClick={onSignIn}>Continue with Google</button>}{error && <small className="auth-error">{error}</small>}</div></main>;
 }
 
-function Overview({ onNavigate, smartMode, setToast }: { onNavigate: (view: View) => void; smartMode: boolean; setToast: (text: string) => void }) {
+function Overview({ smartMode, setToast }: { smartMode: boolean; setToast: (text: string) => void }) {
   return (
     <div className="overview-page">
       <div className="hero-row">
@@ -446,17 +445,6 @@ function Overview({ onNavigate, smartMode, setToast }: { onNavigate: (view: View
           <p>Connect an account or add your first piece of information to get started.</p>
         </div>
       </div>
-
-      <section className="launcher-grid">
-        {modules.slice(1).map((module) => (
-          <button className={`launcher-tile ${module.tone}`} key={module.id} onClick={() => onNavigate(module.id)}>
-            <span className="tile-glow" />
-            <span className="launcher-icon"><module.icon size={28} strokeWidth={1.8} /></span>
-            <span className="launcher-copy"><b>{module.label}</b><small>{module.kicker}</small></span>
-            <ChevronRight className="tile-arrow" size={18} />
-          </button>
-        ))}
-      </section>
 
       <section className="metric-row">
         <MetricCard label="Available to spend" value="$0" delta="Connect an account to begin" icon={<WalletCards size={18} />} />
